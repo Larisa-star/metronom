@@ -2,8 +2,6 @@ import math
 import struct
 import sys
 import time
-import tempfile
-import os
 import winsound
 
 # Фазы: (название, длительность мс, частота начала Гц, частота конца Гц, описание)
@@ -20,25 +18,22 @@ SAMPLE_RATE = 44100
 VOLUME = 0.4  # амплитуда 0..1
 
 
-def make_wav(freq_start, freq_end, duration_ms, path):
-    """Создаёт WAV-файл с синусом; частота плавно меняется от freq_start к freq_end."""
+def make_wav_bytes(freq_start, freq_end, duration_ms):
+    """Возвращает WAV в памяти; частота плавно меняется от freq_start к freq_end."""
     n = int(SAMPLE_RATE * duration_ms / 1000)
-    with open(path, "wb") as f:
-        # Заголовок WAV (моно, 16 бит)
-        data_size = n * 2
-        f.write(b"RIFF" + struct.pack("<I", 36 + data_size) + b"WAVE")
-        f.write(b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, SAMPLE_RATE, SAMPLE_RATE * 2, 2, 16))
-        f.write(b"data" + struct.pack("<I", data_size))
-        phase = 0.0
-        for i in range(n):
-            t = i / n
-            freq = freq_start + (freq_end - freq_start) * t
-            if freq <= 0:
-                sample = 0
-            else:
-                phase += 2 * math.pi * freq / SAMPLE_RATE
-                sample = int(VOLUME * 32767 * math.sin(phase))
-            f.write(struct.pack("<h", sample))
+    data = bytearray()
+    phase = 0.0
+    for i in range(n):
+        t = i / n
+        freq = freq_start + (freq_end - freq_start) * t
+        phase += 2 * math.pi * freq / SAMPLE_RATE
+        data += struct.pack("<h", int(VOLUME * 32767 * math.sin(phase)))
+    header = (
+        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, SAMPLE_RATE, SAMPLE_RATE * 2, 2, 16)
+        + b"data" + struct.pack("<I", len(data))
+    )
+    return header + bytes(data)
 
 
 def play_phase(freq_start, freq_end, duration_ms):
@@ -46,16 +41,14 @@ def play_phase(freq_start, freq_end, duration_ms):
     if freq_start <= 0:
         time.sleep(duration_ms / 1000)
         return
-    path = os.path.join(tempfile.gettempdir(), "triz_phase.wav")
-    make_wav(freq_start, freq_end, duration_ms, path)
-    # SND_ASYNC не нужен: проигрываем синхронно, чтобы фаза не выходила за своё время
-    winsound.PlaySound(path, winsound.SND_FILENAME)
+    winsound.PlaySound(make_wav_bytes(freq_start, freq_end, duration_ms),
+                       winsound.SND_MEMORY)
 
 
 def run():
     print("=" * 60)
     print("  КОГНИТИВНЫЙ МЕТРОНОМ (Windows)")
-    print("  Ctrl+C — выход. Enter — сбросить цикл и начать заново.")
+    print("  Ctrl+C — выход.")
     print("=" * 60)
     time.sleep(2)
 
@@ -63,14 +56,13 @@ def run():
     try:
         while True:
             print(f"\n--- Цикл {cycle} ---")
-            # Абсолютный отсчёт: каждая фаза стартует по расписанию, дрейф не копится
+            # Абсолютный отсчёт: фазы стартуют по расписанию, дрейф не копится
             schedule_start = time.perf_counter()
             planned = 0.0
             for name, dur, f0, f1, desc in PHASES:
                 print(f"[{name}] {dur} мс — {desc}")
                 play_phase(f0, f1, dur)
                 planned += dur / 1000
-                # Выравнивание по расписанию
                 delay = (schedule_start + planned) - time.perf_counter()
                 if delay > 0:
                     time.sleep(delay)
